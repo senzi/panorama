@@ -833,5 +833,11 @@ function importData(event) {
         <p v-if="!activeAccounts.length" class="muted">暂无账户。添加后即可开始记录快照。</p>
       </div>
     </section>
+
+    <footer class="site-footer">
+      <a href="https://github.com/senzi/panorama" target="_blank" rel="noreferrer">senzi/panorama</a>
+      <span>MIT</span>
+      <span>Vibe coding by Codex</span>
+    </footer>
   </main>
 </template>
