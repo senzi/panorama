@@ -68,6 +68,7 @@ watch(activeTab, (tab) => {
 })
 
 const activeAccounts = computed(() => state.accounts.filter((account) => !account.deletedAt))
+const accountMap = computed(() => new Map(state.accounts.map((account) => [account.id, account])))
 const assetAccounts = computed(() => activeAccounts.value.filter((account) => account.type === 'ASSET'))
 const liabilityAccounts = computed(() =>
   activeAccounts.value.filter((account) => account.type === 'LIABILITY'),
@@ -250,7 +251,7 @@ function parseDate(value) {
 }
 
 function todayDate() {
-  return new Date().toISOString().slice(0, 10)
+  return toDateString(new Date())
 }
 
 function toDateString(date) {
@@ -258,6 +259,14 @@ function toDateString(date) {
   const month = String(date.getMonth() + 1).padStart(2, '0')
   const day = String(date.getDate()).padStart(2, '0')
   return `${year}-${month}-${day}`
+}
+
+function toBackupStamp(date) {
+  const day = toDateString(date).replaceAll('-', '')
+  const hours = String(date.getHours()).padStart(2, '0')
+  const minutes = String(date.getMinutes()).padStart(2, '0')
+  const seconds = String(date.getSeconds()).padStart(2, '0')
+  return `${day}_${hours}${minutes}${seconds}`
 }
 
 function startOfWeek(value) {
@@ -275,7 +284,7 @@ function startOfMonth(value) {
 
 function startOfYear(value) {
   const date = parseDate(value)
-  date.setMonth(0, 1)
+  date.setFullYear(date.getFullYear(), 0, 1)
   return toDateString(date)
 }
 
@@ -299,6 +308,7 @@ function buildPeriodCard(label, boundaryDate) {
 }
 
 function makeId(prefix) {
+  if (globalThis.crypto?.randomUUID) return `${prefix}_${crypto.randomUUID()}`
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
 }
 
@@ -308,21 +318,29 @@ function loadStore() {
 
   try {
     const parsed = JSON.parse(raw)
-    if (Array.isArray(parsed.accounts)) state.accounts = parsed.accounts
-    if (Array.isArray(parsed.snapshots)) state.snapshots = parsed.snapshots
+    if (!validateStoreData(parsed)) {
+      showNotice('本地数据结构异常，请先导出备份后检查。')
+      return
+    }
+    state.accounts = parsed.accounts
+    state.snapshots = parsed.snapshots
   } catch {
     showNotice('本地数据读取失败，已保持当前空状态。')
   }
 }
 
 function saveStore() {
-  localStorage.setItem(
-    STORAGE_KEY,
-    JSON.stringify({
-      accounts: state.accounts,
-      snapshots: state.snapshots,
-    }),
-  )
+  try {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        accounts: state.accounts,
+        snapshots: state.snapshots,
+      }),
+    )
+  } catch {
+    showNotice('本地存储空间不足，请先导出 JSON 备份。')
+  }
 }
 
 function showNotice(message) {
@@ -346,6 +364,49 @@ function subtypeLabel(value) {
   return [...subTypes.ASSET, ...subTypes.LIABILITY].find((item) => item.value === value)?.label || value
 }
 
+function validateStoreData(data) {
+  if (!data || !Array.isArray(data.accounts) || !Array.isArray(data.snapshots)) return false
+
+  const accountIds = new Set()
+  const accountsValid = data.accounts.every((account) => {
+    if (!account || typeof account !== 'object') return false
+    if (typeof account.id !== 'string' || typeof account.name !== 'string') return false
+    if (accountIds.has(account.id)) return false
+    if (!['ASSET', 'LIABILITY'].includes(account.type)) return false
+    if (![...subTypes.ASSET, ...subTypes.LIABILITY].some((item) => item.value === account.subType)) {
+      return false
+    }
+    accountIds.add(account.id)
+    return true
+  })
+
+  if (!accountsValid) return false
+
+  return data.snapshots.every((snapshot) => {
+    if (!snapshot || typeof snapshot !== 'object') return false
+    if (typeof snapshot.id !== 'string' || !isValidDateString(snapshot.date)) return false
+    if (!snapshot.balances || typeof snapshot.balances !== 'object' || Array.isArray(snapshot.balances)) {
+      return false
+    }
+    const balancesValid = Object.entries(snapshot.balances).every(
+      ([accountId, value]) => accountIds.has(accountId) && Number.isFinite(Number(value)),
+    )
+    if (!balancesValid) return false
+    if (snapshot.investmentPnl === undefined) return true
+    if (!snapshot.investmentPnl || typeof snapshot.investmentPnl !== 'object' || Array.isArray(snapshot.investmentPnl)) {
+      return false
+    }
+    return Object.entries(snapshot.investmentPnl).every(
+      ([accountId, value]) => accountIds.has(accountId) && Number.isFinite(Number(value)),
+    )
+  })
+}
+
+function isValidDateString(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+  return toDateString(parseDate(value)) === value
+}
+
 function calculateMetrics(snapshot) {
   if (!snapshot) {
     return {
@@ -360,10 +421,9 @@ function calculateMetrics(snapshot) {
     }
   }
 
-  const accountMap = new Map(state.accounts.map((account) => [account.id, account]))
   const totals = Object.entries(snapshot.balances || {}).reduce(
     (totals, [accountId, rawBalance]) => {
-      const account = accountMap.get(accountId)
+      const account = accountMap.value.get(accountId)
       if (!account) return totals
 
       const value = Math.abs(Number(rawBalance) || 0)
@@ -472,7 +532,7 @@ function saveSnapshot() {
   const snapshot = {
     id: existingIndex === -1 ? makeId('snap') : state.snapshots[existingIndex].id,
     date: snapshotForm.date,
-    timestamp: new Date(`${snapshotForm.date}T00:00:00`).getTime(),
+    timestamp: parseDate(snapshotForm.date).getTime(),
     balances,
     investmentPnl,
     note: snapshotForm.note.trim(),
@@ -554,11 +614,7 @@ function exportData() {
   const payload = JSON.stringify({ accounts: state.accounts, snapshots: state.snapshots }, null, 2)
   const blob = new Blob([payload], { type: 'application/json' })
   const anchor = document.createElement('a')
-  const stamp = new Date()
-    .toISOString()
-    .replace(/[-:]/g, '')
-    .replace('T', '_')
-    .slice(0, 15)
+  const stamp = toBackupStamp(new Date())
 
   anchor.href = URL.createObjectURL(blob)
   anchor.download = `assets_backup_${stamp}.json`
@@ -581,8 +637,8 @@ function importData(event) {
   reader.onload = () => {
     try {
       const parsed = JSON.parse(String(reader.result))
-      if (!Array.isArray(parsed.accounts) || !Array.isArray(parsed.snapshots)) {
-        showNotice('导入失败：JSON 必须包含 accounts 和 snapshots。')
+      if (!validateStoreData(parsed)) {
+        showNotice('导入失败：JSON 结构不符合账户/快照格式。')
         return
       }
       state.accounts = parsed.accounts
