@@ -77,7 +77,7 @@ const investmentAccounts = computed(() =>
 )
 
 const sortedSnapshots = computed(() =>
-  [...state.snapshots].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()),
+  [...state.snapshots].sort((a, b) => parseDate(a.date).getTime() - parseDate(b.date).getTime()),
 )
 
 const latestSnapshot = computed(() => sortedSnapshots.value.at(-1) || null)
@@ -98,9 +98,24 @@ const metricCards = computed(() => [
   { label: '较上次变化', value: latestMetrics.value.netWorth - previousMetrics.value.netWorth, delta: true },
   { label: '投资账面', value: latestMetrics.value.investmentBook },
   { label: '浮盈/浮亏', value: latestMetrics.value.investmentPnl, delta: true },
+  {
+    label: '较上次净投入估算',
+    value: latestMetrics.value.investmentCost - previousMetrics.value.investmentCost,
+    delta: true,
+  },
   { label: '投资成本估算', value: latestMetrics.value.investmentCost },
   { label: '现金及存款', value: latestMetrics.value.cash },
 ])
+
+const periodCards = computed(() => {
+  if (!latestSnapshot.value) return []
+
+  return [
+    buildPeriodCard('本周变化', startOfWeek(latestSnapshot.value.date)),
+    buildPeriodCard('本月变化', startOfMonth(latestSnapshot.value.date)),
+    buildPeriodCard('本年变化', startOfYear(latestSnapshot.value.date)),
+  ].filter(Boolean)
+})
 
 const historyRows = computed(() =>
   sortedSnapshots.value
@@ -112,6 +127,7 @@ const historyRows = computed(() =>
         metrics,
         delta: previous ? metrics.netWorth - previous.netWorth : 0,
         pnlDelta: previous ? metrics.investmentPnl - previous.investmentPnl : 0,
+        netInvestmentDelta: previous ? metrics.investmentCost - previous.investmentCost : 0,
       }
     })
     .reverse(),
@@ -127,6 +143,11 @@ const selectedSnapshot = computed(() => {
 
 const selectedMetrics = computed(() => calculateMetrics(selectedSnapshot.value))
 
+const selectedPreviousSnapshot = computed(() => {
+  const index = sortedSnapshots.value.findIndex((snapshot) => snapshot.id === selectedSnapshot.value?.id)
+  return index > 0 ? sortedSnapshots.value[index - 1] : null
+})
+
 const accountBreakdown = computed(() => {
   const snapshot = selectedSnapshot.value
   if (!snapshot) return []
@@ -136,11 +157,17 @@ const accountBreakdown = computed(() => {
     .map((account) => {
       const balance = Math.abs(Number(snapshot.balances[account.id]) || 0)
       const pnl = account.subType === 'INVEST' ? getSnapshotPnl(snapshot, account.id) : null
+      const previousBalance = Math.abs(Number(selectedPreviousSnapshot.value?.balances?.[account.id]) || 0)
+      const previousPnl =
+        account.subType === 'INVEST' ? getSnapshotPnl(selectedPreviousSnapshot.value, account.id) : null
+      const cost = pnl === null ? null : balance - pnl
+      const previousCost = previousPnl === null ? null : previousBalance - previousPnl
       return {
         ...account,
         balance,
         pnl,
-        cost: pnl === null ? null : balance - pnl,
+        cost,
+        netInvestmentDelta: cost === null || previousCost === null ? null : cost - previousCost,
         weight: selectedMetrics.value.totalAssets
           ? (balance / selectedMetrics.value.totalAssets) * 100
           : 0,
@@ -172,6 +199,7 @@ const chartPoints = computed(() => {
       totalAssets: metrics.totalAssets,
       totalLiabilities: metrics.totalLiabilities,
       investmentPnl: metrics.investmentPnl,
+      timestamp: parseDate(snapshot.date).getTime(),
     }
   })
 
@@ -194,9 +222,15 @@ const chartPoints = computed(() => {
   const width = 760
   const height = 240
   const pad = 28
+  const minTime = Math.min(...rows.map((row) => row.timestamp))
+  const maxTime = Math.max(...rows.map((row) => row.timestamp))
+  const timeRange = maxTime - minTime || 1
 
-  const toPoint = (row, index, key) => {
-    const x = rows.length === 1 ? width / 2 : pad + (index * (width - pad * 2)) / (rows.length - 1)
+  const toPoint = (row, key) => {
+    const x =
+      rows.length === 1
+        ? width / 2
+        : pad + ((row.timestamp - minTime) / timeRange) * (width - pad * 2)
     const y = height - pad - ((row[key] - min) / range) * (height - pad * 2)
     return `${x.toFixed(1)},${y.toFixed(1)}`
   }
@@ -204,14 +238,64 @@ const chartPoints = computed(() => {
   return {
     series: config.map((serie) => ({
       ...serie,
-      points: rows.map((row, index) => toPoint(row, index, serie.key)).join(' '),
+      points: rows.map((row) => toPoint(row, serie.key)).join(' '),
     })),
     labels: rows.filter((_, index) => index === 0 || index === rows.length - 1),
   }
 })
 
+function parseDate(value) {
+  const [year, month, day] = value.split('-').map(Number)
+  return new Date(year, month - 1, day)
+}
+
 function todayDate() {
   return new Date().toISOString().slice(0, 10)
+}
+
+function toDateString(date) {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function startOfWeek(value) {
+  const date = parseDate(value)
+  const day = date.getDay() || 7
+  date.setDate(date.getDate() - day + 1)
+  return toDateString(date)
+}
+
+function startOfMonth(value) {
+  const date = parseDate(value)
+  date.setDate(1)
+  return toDateString(date)
+}
+
+function startOfYear(value) {
+  const date = parseDate(value)
+  date.setMonth(0, 1)
+  return toDateString(date)
+}
+
+function buildPeriodCard(label, boundaryDate) {
+  const baseline = [...sortedSnapshots.value]
+    .reverse()
+    .find((snapshot) => snapshot.date < boundaryDate)
+  if (!baseline || !latestSnapshot.value) return null
+
+  const baselineMetrics = calculateMetrics(baseline)
+  return {
+    label,
+    fromDate: baseline.date,
+    boundaryDate,
+    netWorthDelta: latestMetrics.value.netWorth - baselineMetrics.netWorth,
+    assetDelta: latestMetrics.value.totalAssets - baselineMetrics.totalAssets,
+    liabilityDelta: latestMetrics.value.totalLiabilities - baselineMetrics.totalLiabilities,
+    pnlDelta: latestMetrics.value.investmentPnl - baselineMetrics.investmentPnl,
+    netInvestmentDelta: latestMetrics.value.investmentCost - baselineMetrics.investmentCost,
+  }
 }
 
 function makeId(prefix) {
@@ -646,6 +730,50 @@ function importData(event) {
           </article>
         </div>
 
+        <section v-if="periodCards.length" class="period-panel">
+          <div class="group-title">
+            <h3>周期变化</h3>
+            <span>周一为周初，1 号为月初</span>
+          </div>
+          <div class="period-grid">
+            <article v-for="card in periodCards" :key="card.label" class="period-card">
+              <div class="period-card-head">
+                <span>{{ card.label }}</span>
+                <small>基准 {{ card.fromDate }}</small>
+              </div>
+              <strong :class="{ gain: card.netWorthDelta > 0, loss: card.netWorthDelta < 0 }">
+                {{ formatMoney(card.netWorthDelta) }}
+              </strong>
+              <dl>
+                <div>
+                  <dt>资产</dt>
+                  <dd :class="{ gain: card.assetDelta > 0, loss: card.assetDelta < 0 }">
+                    {{ formatMoney(card.assetDelta) }}
+                  </dd>
+                </div>
+                <div>
+                  <dt>负债</dt>
+                  <dd :class="{ loss: card.liabilityDelta > 0, gain: card.liabilityDelta < 0 }">
+                    {{ formatMoney(card.liabilityDelta) }}
+                  </dd>
+                </div>
+                <div>
+                  <dt>浮盈/浮亏</dt>
+                  <dd :class="{ gain: card.pnlDelta > 0, loss: card.pnlDelta < 0 }">
+                    {{ formatMoney(card.pnlDelta) }}
+                  </dd>
+                </div>
+                <div>
+                  <dt>估算净投入</dt>
+                  <dd :class="{ gain: card.netInvestmentDelta > 0, loss: card.netInvestmentDelta < 0 }">
+                    {{ formatMoney(card.netInvestmentDelta) }}
+                  </dd>
+                </div>
+              </dl>
+            </article>
+          </div>
+        </section>
+
         <section class="chart-panel">
           <div class="group-title">
             <h3>趋势</h3>
@@ -744,6 +872,12 @@ function importData(event) {
                     {{ formatMoney(account.pnl) }}
                   </strong>
                   <span>账面 {{ formatMoney(account.balance) }}</span>
+                  <span
+                    v-if="account.netInvestmentDelta !== null"
+                    :class="{ gain: account.netInvestmentDelta > 0, loss: account.netInvestmentDelta < 0 }"
+                  >
+                    净投入 {{ formatMoney(account.netInvestmentDelta) }}
+                  </span>
                 </div>
               </div>
             </div>
@@ -764,6 +898,7 @@ function importData(event) {
                   <th>净资产</th>
                   <th>变化</th>
                   <th>浮盈/浮亏</th>
+                  <th>估算净投入</th>
                   <th>备注</th>
                   <th></th>
                 </tr>
@@ -775,6 +910,9 @@ function importData(event) {
                   <td :class="{ gain: row.delta > 0, loss: row.delta < 0 }">{{ formatMoney(row.delta) }}</td>
                   <td :class="{ gain: row.metrics.investmentPnl > 0, loss: row.metrics.investmentPnl < 0 }">
                     {{ formatMoney(row.metrics.investmentPnl) }}
+                  </td>
+                  <td :class="{ gain: row.netInvestmentDelta > 0, loss: row.netInvestmentDelta < 0 }">
+                    {{ formatMoney(row.netInvestmentDelta) }}
                   </td>
                   <td class="note-cell">{{ row.note || '—' }}</td>
                   <td><button class="text-button" type="button" @click="deleteSnapshot(row)">删除</button></td>

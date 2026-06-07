@@ -220,6 +220,7 @@ textarea:focus {
 }
 
 .snapshot-form,
+.period-panel,
 .history-panel,
 .chart-panel,
 .account-list {
@@ -243,6 +244,8 @@ textarea:focus {
 
 .balance-group,
 .metric-card,
+.period-panel,
+.period-card,
 .chart-panel,
 .history-panel,
 .empty-state,
@@ -332,6 +335,66 @@ textarea:focus {
 .metric-card.positive strong,
 .gain {
   color: #206b3f;
+}
+
+.period-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.period-card {
+  padding: 16px;
+  background: #fff;
+}
+
+.period-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.period-card-head span,
+.period-card-head small {
+  color: #666;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.period-card > strong {
+  display: block;
+  margin-bottom: 16px;
+  font-size: 26px;
+  line-height: 1.1;
+  overflow-wrap: anywhere;
+}
+
+.period-card dl {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.period-card dl div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid #deded9;
+  padding-top: 8px;
+}
+
+.period-card dt,
+.period-card dd {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.period-card dt {
+  color: #777;
 }
 
 .chart-panel,
@@ -518,7 +581,7 @@ textarea:focus {
 
 table {
   width: 100%;
-  min-width: 820px;
+  min-width: 960px;
   border-collapse: collapse;
 }
 
@@ -626,6 +689,7 @@ th {
 
   .balance-grid,
   .metric-grid,
+  .period-grid,
   .account-form,
   .insight-grid,
   .detail-stats {
